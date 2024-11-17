@@ -13,6 +13,6 @@ class LABDataset(Dataset):
         return len(self.l_files)
 
     def __getitem__(self, idx):
-        L_tensor = torch.load(os.path.join(self.l_path, self.l_files[idx]))
-        AB_tensor = torch.load(os.path.join(self.ab_path, self.ab_files[idx]))
+        L_tensor = torch.load(os.path.join(self.l_path, self.l_files[idx]), weights_only=False)
+        AB_tensor = torch.load(os.path.join(self.ab_path, self.ab_files[idx]), weights_only=False)
         return L_tensor, AB_tensor

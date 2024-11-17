@@ -1,0 +1,7 @@
+archive/
+preprocessed_data/
+colorization/
+__pycache__/
+*.png
+*.jpg
+*.pth
