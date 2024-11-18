@@ -6,11 +6,9 @@ import numpy as np
 from model import Unet  
 import matplotlib.pyplot as plt
 
-model_path = "unet_colorization_final.pth"  
-# path to the image, can either be grayscale or color
-input_image_path = "colorization/training_small/monarch/163.jpg"
-output_image_path = "modeltest.png" # Path to save the colorized output image
-
+model_path = "unet_epoch_10.pth"  
+input_image_path = "colorization/training_small/turnstile/016.jpg"
+output_image_path = "modeltest.png"  # Path to save the side-by-side output
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -20,36 +18,35 @@ model.load_state_dict(torch.load(model_path, map_location=device))
 model = model.to(device)
 model.eval()
 
-
 # Preprocessing function for input image
 def preprocess_image(image_path):
-    # Load image as grayscale
+    """
+    Preprocess image to match training data normalization
+    """
     image = Image.open(image_path).convert('L')
     transform = transforms.Compose([
-        transforms.Resize((256, 256)),  # Resize to model's input size
-        transforms.ToTensor(),         
-        transforms.Normalize((0,), (1,))  # Normalize L to [0, 1]
+        transforms.ToTensor(),  # Converts to [0, 1] range
     ])
-    L_tensor = transform(image).unsqueeze(0)  # Add batch dimension
-
-    L_debug = L_tensor.squeeze().detach().cpu().numpy() * 255.0
-    plt.imshow(L_debug, cmap="gray")
-    plt.savefig("grayscale.png")
-
+    L_tensor = transform(image).unsqueeze(0)
     return L_tensor
 
-# convert LAB to RGB
+# Convert LAB to RGB
 def postprocess_output(L_tensor, AB_tensor):
-    # denormalize L channel
-    L = L_tensor.squeeze().detach().cpu().numpy() * 50.0 + 50.0
-    # denormalize AB channels
-    AB = AB_tensor.squeeze().detach().cpu().numpy() * 128.0
-    # combine L and AB channels
-    LAB = np.zeros((256, 256, 3), dtype=np.float32)
+    """
+    Convert model output back to RGB image
+    """
+    L = L_tensor.squeeze().detach().cpu().numpy() * 100.0
+    AB = AB_tensor.squeeze().detach().cpu().numpy() * 128.0 + 128.0
+    
+    LAB = np.zeros((L.shape[0], L.shape[1], 3), dtype=np.float32)
     LAB[..., 0] = L
     LAB[..., 1:] = AB.transpose(1, 2, 0)
-    # convert LAB to RGB
-    RGB = cv2.cvtColor(LAB.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    
+    LAB[..., 0] = np.clip(LAB[..., 0], 0, 100)
+    LAB[..., 1:] = np.clip(LAB[..., 1:], -128, 127)
+    
+    LAB = LAB.astype(np.uint8)
+    RGB = cv2.cvtColor(LAB, cv2.COLOR_LAB2RGB)
     return RGB
 
 with torch.no_grad():
@@ -62,6 +59,13 @@ with torch.no_grad():
     # Postprocess output to get colorized image
     colorized_image = postprocess_output(L_tensor[0], AB_tensor[0])
     
-    # Save or display the colorized image
-    cv2.imwrite(output_image_path, cv2.cvtColor(colorized_image, cv2.COLOR_RGB2BGR))
-    print(f"Colorized image saved to {output_image_path}")
+    # Prepare the L-channel for side-by-side display
+    L_image = (L_tensor.squeeze().cpu().numpy() * 255).astype(np.uint8)
+    L_image = cv2.cvtColor(L_image, cv2.COLOR_GRAY2RGB)  # Convert to RGB for consistency
+    
+    # Combine L-channel and colorized output side by side
+    side_by_side_image = np.hstack((L_image, colorized_image))
+    
+    # Save the side-by-side image
+    cv2.imwrite(output_image_path, cv2.cvtColor(side_by_side_image, cv2.COLOR_RGB2BGR))
+    print(f"Side-by-side image saved to {output_image_path}")
