@@ -1,6 +1,11 @@
 import torch
 import torch.nn as nn
 
+"""
+This file defines the model architectures
+"""
+
+
 class Unet(nn.Module):
     def __init__(self, input_nc, output_nc, num_downs, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False):
         """Construct a Unet generator

@@ -9,6 +9,10 @@ import matplotlib.pyplot as plt
 from model import Unet
 from ColorizationDataset import LABDataset
 
+"""
+This file trains the model
+"""
+
 # Training parameters
 num_epochs = 50
 batch_size = 64

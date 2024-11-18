@@ -6,6 +6,15 @@ from torchvision import datasets
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
+"""
+This file preprocesses the data in colorization/training_small and colorization/validation_small
+Each file gets split into L and AB tensors and gets saved to preprocessed_data/<<dataset-type>>/L 
+and preprocessed_data/<<dataset-type>>/AB 
+"""
+
+
+
+
 def verify_single_image(rgb_image, save_path=None):
     """
     Process a single image through LAB conversion and back to verify correctness.
@@ -50,7 +59,8 @@ def verify_single_image(rgb_image, save_path=None):
 
 def preprocess_and_save(data_path, l_output_path, ab_output_path):
     """
-    Preprocess images and save LAB tensors with verification.
+    Preprocess images and save LAB tensors
+    This function recombines the tensors L and AB for first 5 images as a sanity check.
     """
     dataset = datasets.ImageFolder(data_path)
     os.makedirs("verification", exist_ok=True)
