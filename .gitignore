@@ -1,6 +1,7 @@
 archive/
 preprocessed_data/
 colorization/
+draft/
 __pycache__/
 *.png
 *.jpg
