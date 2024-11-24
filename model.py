@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import functools
 
 """
 This file defines the model architectures
@@ -191,7 +190,7 @@ class Discriminator(nn.Module):
     Implements a PatchGAN discriminator
     """
     
-    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d):
+    def __init__(self, input_nc, ndf=64, n_layers=3):
         """
         Construct a PatchGAN discriminator
 
@@ -202,10 +201,6 @@ class Discriminator(nn.Module):
             norm_layer      -- normalization layer
         """
         super(Discriminator, self).__init__()
-        if type(norm_layer) == functools.partial:
-            use_bias = norm_layer.func == nn.InstanceNorm2d
-        else:
-            use_bias = norm_layer == nn.InstanceNorm2d
 
         # Define the convolutional layers
         kw = 4  # Kernel size
@@ -226,8 +221,8 @@ class Discriminator(nn.Module):
             nf_mult = min(2 ** n, 8)
             sequence += [
                 nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult,
-                          kernel_size=kw, stride=2, padding=padw, bias=use_bias),
-                norm_layer(ndf * nf_mult),
+                          kernel_size=kw, stride=2, padding=padw),
+                nn.BatchNorm2d(ndf * nf_mult),
                 nn.LeakyReLU(0.2, True)
             ]
 
@@ -237,7 +232,7 @@ class Discriminator(nn.Module):
         sequence += [
             nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult,
                       kernel_size=kw, stride=1, padding=padw, bias=use_bias),
-            norm_layer(ndf * nf_mult),
+            nn.BatchNorm2d(ndf * nf_mult),
             nn.LeakyReLU(0.2, True)
         ]
 
