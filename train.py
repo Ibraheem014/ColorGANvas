@@ -54,6 +54,7 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
 
     # Initialize loss functions
     criterion_GAN = nn.BCEWithLogitsLoss()
+    criterion_L1 = nn.L1Loss()
     
     # Initialize lists to store metrics
     train_G_losses = []
@@ -74,7 +75,7 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
 
             # Forward pass with mixed precision
             with autocast(device_type="cuda"):
-                fake_AB = model(L)
+                fake_AB = generator(L)
 
                 # Create real and fake input pairs for the discriminator
                 real_input = torch.cat((L, AB), dim=1)   # Real pair (L and real AB)
@@ -98,10 +99,10 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
             scaler.scale(loss_D).backward()
             scaler.step(optimizer_D)
 
-            optimizer.zero_grad()
+            optimizer_G.zero_grad()
 
             # Generate fake images again for generator update
-            with autocast(enabled=(device.type == 'cuda')):
+            with autocast(device_type="cuda"):
                 fake_AB = generator(L)
                 fake_input = torch.cat((L, fake_AB), dim=1)
                 pred_fake = discriminator(fake_input)
@@ -217,7 +218,7 @@ if __name__ == '__main__':
     train_loader, valid_loader = initialize_data_loaders()
     generator, discriminator = initialize_model()
     criterion = nn.MSELoss()
-    optimizer_G = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.5, 0.999))
+    optimizer_G = optim.Adam(generator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
     optimizer_D = optim.Adam(discriminator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
     #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.8)
     

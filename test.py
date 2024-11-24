@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 This File will be used for manual inference of the model, 1 image at a time
 """
 
-model_path = "unet_colorization_final.pth"
+model_path = "generator_epoch_40.pth"
 # replace with the path of the image you want to run inference on
-input_image_path = "colorization/validation_small/wool/028.jpg"
+input_image_path = "colorization/validation_small/tobacco_shop/014.jpg"
 output_image_path = "modeltest.png"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

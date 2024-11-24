@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import functools
 
 """
 This file defines the model architectures
