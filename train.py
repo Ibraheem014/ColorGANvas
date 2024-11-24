@@ -16,7 +16,7 @@ This file trains the model
 # Training parameters
 num_epochs = 50
 batch_size = 64
-learning_rate = 0.0008 
+learning_rate = 0.0002
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def initialize_data_loaders():
@@ -34,12 +34,25 @@ def initialize_data_loaders():
     
     return train_loader, valid_loader
 
+def weights_init_normal(m):
+    """Applies custom weight initialization."""
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+
 def initialize_model():
     """Initialize the U-Net model and transfer it to the GPU if available."""
 
     # Initialize the model and the discriminator
     generator = Unet(input_nc=1, output_nc=2, num_downs=7, ngf=64)
     discriminator = Discriminator(input_nc=3, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d)
+
+    # Apply custom weight initialization 
+    generator.apply(weights_init_normal)
+    discriminator.apply(weights_init_normal)
 
     # Transfer models to device
     generator = generator.to(device)
@@ -133,7 +146,7 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         generator.eval()
         val_loss = 0
         
-        with torch.no_grad():
+        with torch.no_grad(), autocast(device_type="cuda"):
             for L, AB in valid_loader:
                 L, AB = L.to(device), AB.to(device)
                 output = generator(L)
@@ -154,7 +167,8 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         print(f"Epoch [{epoch+1}/{num_epochs}], Time: {epoch_time:.2f}s")
         print(f"Generator Loss: {avg_G_loss:.4f}, Discriminator Loss: {avg_D_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
-        #scheduler.step()
+        if scheduler:
+            scheduler.step()
 
         # Save checkpoints
         if (epoch + 1) % 5 == 0:
@@ -220,6 +234,6 @@ if __name__ == '__main__':
     criterion = nn.MSELoss()
     optimizer_G = optim.Adam(generator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
     optimizer_D = optim.Adam(discriminator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
-    #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.8)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer_G, step_size=15, gamma=0.8)
     
     train_model(generator, discriminator, train_loader, valid_loader, optimizer_G, optimizer_D, num_epochs)
