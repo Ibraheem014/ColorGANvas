@@ -48,7 +48,7 @@ def initialize_model():
 
     # Initialize the model and the discriminator
     generator = Unet(input_nc=1, output_nc=2, num_downs=7, ngf=64)
-    discriminator = Discriminator(input_nc=3, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d)
+    discriminator = Discriminator(input_nc=3, ndf=64, n_layers=3)
 
     # Apply custom weight initialization 
     generator.apply(weights_init_normal)
