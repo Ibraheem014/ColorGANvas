@@ -16,7 +16,7 @@ This file trains the model
 # Training parameters
 num_epochs = 50
 batch_size = 64
-learning_rate = 0.0008 
+learning_rate = 0.0002 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def initialize_data_loaders():
