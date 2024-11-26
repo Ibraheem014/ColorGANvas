@@ -33,7 +33,8 @@ class Unet(nn.Module):
         self.model = UNetBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True)  # add the outermost layer
 
     def forward(self, input):
-        return self.model(input)
+        chroma_output, hue_output = self.model(input)
+        return chroma_output, hue_output
 
 class UNetBlock(nn.Module):
     """
@@ -65,12 +66,20 @@ class UNetBlock(nn.Module):
         upnorm = nn.BatchNorm2d(outer_nc)
 
         if outermost:
-            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
-                                        kernel_size=4, stride=2,
-                                        padding=1)
+            upconv_chroma = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
+                                               kernel_size=4, stride=2,
+                                               padding=1)
+            upconv_hue = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
+                                            kernel_size=4, stride=2,
+                                            padding=1)
             down = [downconv]
-            up = [uprelu, upconv, nn.Tanh()]
-            model = down + [submodule] + up
+            up_chroma = [uprelu, upconv_chroma, nn.Softmax(dim=1)]  # Chroma output as probabilities
+            up_hue = [uprelu, upconv_hue, nn.Softmax(dim=1)]        # Hue output as probabilities
+
+            # Separate heads added to the model
+            self.model_chroma = nn.Sequential(*(down + [submodule] + up_chroma))
+            self.model_hue = nn.Sequential(*(down + [submodule] + up_hue))
+            
         elif innermost:
             upconv = nn.ConvTranspose2d(inner_nc, outer_nc,
                                         kernel_size=4, stride=2,
@@ -78,6 +87,8 @@ class UNetBlock(nn.Module):
             down = [downrelu, downconv]
             up = [uprelu, upconv, upnorm]
             model = down + up
+            self.model = nn.Sequential(*model)
+
         else:
             upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
                                         kernel_size=4, stride=2,
@@ -90,11 +101,14 @@ class UNetBlock(nn.Module):
             else:
                 model = down + [submodule] + up
 
-        self.model = nn.Sequential(*model)
+            self.model = nn.Sequential(*model)
 
     def forward(self, x):
         if self.outermost:
-            return self.model(x)
+            # Separate outputs for Chroma and Hue
+            chroma_output = self.model_chroma(x)
+            hue_output = self.model_hue(x)
+            return chroma_output, hue_output
         else:  # add skip connections
             return torch.cat([x, self.model(x)], 1)
 

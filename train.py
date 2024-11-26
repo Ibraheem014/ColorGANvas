@@ -8,6 +8,7 @@ import time
 import matplotlib.pyplot as plt
 from model import Unet, Discriminator
 from ColorizationDataset import LABDataset
+from ChromaHueKLLoss import CromaHueKLLoss
 
 """
 This file trains the model
@@ -39,7 +40,7 @@ def initialize_model():
 
     # Initialize the model and the discriminator
     generator = Unet(input_nc=1, output_nc=2, num_downs=7, ngf=64)
-    discriminator = Discriminator(input_nc=3, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d)
+    discriminator = Discriminator(input_nc=8, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d)
 
     # Transfer models to device
     generator = generator.to(device)
@@ -55,6 +56,7 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
     # Initialize loss functions
     criterion_GAN = nn.BCEWithLogitsLoss()
     criterion_L1 = nn.L1Loss()
+    chroma_hue_loss = CromaHueKLLoss(lambda_hue=5.0)
     
     # Initialize lists to store metrics
     train_G_losses = []
@@ -68,18 +70,37 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         epoch_G_loss = 0
         epoch_D_loss = 0
         start_time = time.time()
+        
 
         for L, AB in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}", position=0, leave=True):
-            L, AB = L.to(device), AB.to(device)
+            L, AB = L.to(device), AB.to(device) #real AB input tensor size flow 4 
             optimizer_D.zero_grad()
 
             # Forward pass with mixed precision
             with autocast(device_type="cuda"):
-                fake_AB = generator(L)
+                fake_chroma, fake_hue = generator(L)
+                fake_AB = torch.cat((fake_chroma, fake_hue), dim=1)
+
+                L_expanded = L.expand(-1, 4, -1, -1)
+                #print("L shape:", L.shape)                   # Expected: (batch_size, 1, height, width)
+                #print("fake_chroma shape:", fake_chroma.shape)  # Expected: (batch_size, height, width)
+                #print("fake_hue shape:", fake_hue.shape)        # Expected: (batch_size, height, width)
+                #print("fake_AB shape:", fake_AB.shape)          # Expected: (batch_size, 2, height, width)
+                #print("L_expanded shape:", L_expanded.shape)    # Expected: (batch_size, 2, height, width)
+                #print("AB shape:", AB.shape) #Expected: (batch_size, 4, height, width) currently 2®
 
                 # Create real and fake input pairs for the discriminator
-                real_input = torch.cat((L, AB), dim=1)   # Real pair (L and real AB)
-                fake_input = torch.cat((L, fake_AB.detach()), dim=1)  # Fake pair (L and fake AB)
+                chroma = AB[:, 0:1, :, :]
+                hue = AB[:, 1:2, :, :]
+                AB_expand = torch.cat((chroma, chroma, hue, hue), dim=1)
+                real_input = torch.cat((L_expanded, AB_expand), dim=1)   # Real pair (L and real AB)
+                fake_input = torch.cat((L_expanded, fake_AB.detach()), dim=1)  # Fake pair (L and fake AB)
+
+
+
+                #print("real_input shape:", real_input.shape)    # Expected: (batch_size, 4, height, width)
+                #print("fake_input shape:", fake_input.shape)    # Expected: (batch_size, 4, height, width)
+
 
                 # Discriminator output for real images
                 pred_real = discriminator(real_input)
@@ -93,28 +114,49 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
                 # Compute discriminator losses
                 loss_D_real = criterion_GAN(pred_real, real_labels)
                 loss_D_fake = criterion_GAN(pred_fake, fake_labels)
+                
                 loss_D = (loss_D_real + loss_D_fake) * 0.5
 
             # Backpropagate discriminator loss
             scaler.scale(loss_D).backward()
             scaler.step(optimizer_D)
+            scaler.update()
 
             optimizer_G.zero_grad()
 
             # Generate fake images again for generator update
             with autocast(device_type="cuda"):
-                fake_AB = generator(L)
-                fake_input = torch.cat((L, fake_AB), dim=1)
+                fake_chroma, fake_hue = generator(L)
+                fake_AB = torch.cat((fake_chroma, fake_hue), dim=1)
+                L_expanded = L.expand(-1, 4, -1, -1)
+                
+                fake_input = torch.cat((L_expanded, fake_AB.detach()), dim=1)
                 pred_fake = discriminator(fake_input)
 
                 # Generator adversarial loss (we want the discriminator to classify the fake images as real)
                 loss_G_GAN = criterion_GAN(pred_fake, real_labels)
 
                 # Generator reconstruction loss
-                loss_G_L1 = criterion_L1(fake_AB, AB) * 100  # Adjust the weight as needed
+                ##loss_G_L1 = criterion_L1(fake_AB, AB) * 100  # Adjust the weight as needed
+
+                # Separate Chroma and Hue components (ensure your model outputs these separately)
+                gt_chroma, gt_hue = AB[:, 0, :, :].unsqueeze(1), AB[:, 1, :, :].unsqueeze(1)
+                #fake_chroma = fake_chroma.unsqueeze(1)
+                #fake_hue = fake_hue.unsqueeze(1)
+
+                #print("gt_chroma shape:", gt_chroma.shape)
+                #print("fake_chroma shape:", fake_chroma.shape)
+                #print("gt_hue shape:", gt_hue.shape)
+                #print("fake_hue shape:", fake_hue.shape)
+
+
+                # Compute the Chroma-Hue KL loss
+                chroma_values = gt_chroma  # Chroma values for weighting
+                loss_G_KL = chroma_hue_loss(gt_chroma, fake_chroma, gt_hue, fake_hue, chroma_values)
+
 
                 # Total generator loss
-                loss_G = loss_G_GAN + loss_G_L1
+                loss_G = loss_G_GAN + loss_G_KL
             
             # Backpropagate generator loss
             scaler.scale(loss_G).backward()
@@ -136,11 +178,27 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         with torch.no_grad():
             for L, AB in valid_loader:
                 L, AB = L.to(device), AB.to(device)
-                output = generator(L)
-                loss = criterion(output, AB)
-                val_loss += loss.item()
-        
-        avg_val_loss = val_loss / len(valid_loader)
+                fake_chroma, fake_hue = generator(L)
+                gt_chroma, gt_hue = AB[:, 0, :, :], AB[:, 1, :, :]
+
+                #output = generator(L)
+                ##loss = criterion_L1(output, AB)
+                ##val_loss += loss.item()
+                # Separate Chroma and Hue
+                # Ensure tensors have a channel dimension
+                if gt_chroma.dim() == 3:  # If shape is [batch_size, height, width]
+                    gt_chroma = gt_chroma.unsqueeze(1)  # Shape: [batch_size, 1, height, width]
+                if gt_hue.dim() == 3:
+                    gt_hue = gt_hue.unsqueeze(1)
+                if fake_chroma.dim() == 3:
+                    fake_chroma = fake_chroma.unsqueeze(1)
+                if fake_hue.dim() == 3:
+                    fake_hue = fake_hue.unsqueeze(1)
+
+                chroma_values = gt_chroma
+                val_loss += chroma_hue_loss(gt_chroma, fake_chroma, gt_hue, fake_hue, chroma_values).item()
+                
+            avg_val_loss = val_loss / len(valid_loader)
         
         # Store metrics
         train_G_losses.append(avg_G_loss)
