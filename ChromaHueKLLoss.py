@@ -7,44 +7,43 @@ class CromaHueKLLoss(nn.Module):
         super(CromaHueKLLoss, self).__init__()
         self.lambda_hue = lambda_hue
 
-    def forward(self, rho_chroma, rho_hat_chroma, rho_hue, rho_hat_hue, chroma):
-
+    def forward(self, gt_chroma, pred_chroma, gt_hue, pred_hue, chroma_weights):
         """
         Compute the combined KL divergence loss.
-
+        
         Args:
-            rho_chroma (Tensor): Ground truth Chroma distribution.
-            rho_hat_chroma (Tensor): Predicted Chroma distribution.
-            rho_hue (Tensor): Ground truth Hue distribution.
-            rho_hat_hue (Tensor): Predicted Hue distribution.
-            chroma (Tensor): Chroma values for weighting the Hue loss.
-
-        Returns:
-            Tensor: Combined KL divergence loss.
+            gt_chroma: Ground truth Chroma distribution [0,1]
+            pred_chroma: Predicted Chroma distribution [0,1]
+            gt_hue: Ground truth Hue distribution [0,1]
+            pred_hue: Predicted Hue distribution [0,1]
+            chroma_weights: Chroma values for weighting the Hue loss [0,1]
         """
-
-        # Normalize distributions (to ensure they are valid probability distributions)
-        rho_chroma = F.softmax(rho_chroma, dim=-1)
-        rho_hat_chroma = F.softmax(rho_hat_chroma, dim=-1)
-        rho_hue = F.softmax(rho_hue, dim=-1)
-        rho_hat_hue = F.softmax(rho_hat_hue, dim=-1)
-
-        # Reshape distributions to match expected input shape for KL divergence
-        rho_chroma = rho_chroma.permute(0, 2, 3, 1).reshape(-1, rho_chroma.shape[1])  # Flatten to [N, C]
-        rho_hat_chroma = rho_hat_chroma.permute(0, 2, 3, 1).reshape(-1, rho_hat_chroma.shape[1])  # Flatten to [N, C]
-        rho_hue = rho_hue.permute(0, 2, 3, 1).reshape(-1, rho_hue.shape[1])  # Flatten to [N, C]
-        rho_hat_hue = rho_hat_hue.permute(0, 2, 3, 1).reshape(-1, rho_hat_hue.shape[1])  # Flatten to [N, C]
-
+        # For KL div, input should be log probabilities and target should be probabilities
+        pred_chroma = F.softmax(pred_chroma, dim=1)
+        pred_hue = F.softmax(pred_hue, dim=1)
+        
+        # Convert ground truth to probability distributions
+        gt_chroma = F.softmax(gt_chroma, dim=1)
+        gt_hue = F.softmax(gt_hue, dim=1)
+        
         # Compute KL divergence for Chroma
-        kl_chroma = F.kl_div(torch.log(rho_hat_chroma + 1e-8), rho_chroma, reduction='batchmean')
-        
-        # Compute KL divergence for Hue
-        kl_hue = F.kl_div(torch.log(rho_hat_hue + 1e-8), rho_hue, reduction='batchmean')
-        
-        # Weight the Hue KL divergence by Chroma
-        weighted_kl_hue = torch.mean(chroma * kl_hue)
+        kl_chroma = F.kl_div(
+            torch.log(pred_chroma + 1e-8),
+            gt_chroma,
+            reduction='none'
+        ).sum(dim=1).mean()
 
-        # Combine the losses
-        #replaces the L1 loss of discriminator
+        # Compute KL divergence for Hue
+        kl_hue = F.kl_div(
+            torch.log(pred_hue + 1e-8),
+            gt_hue,
+            reduction='none'
+        ).sum(dim=1).mean()
+        
+        # Weight the Hue loss by Chroma values
+        weighted_kl_hue = chroma_weights.mean() * kl_hue
+
+        # Combine losses
         total_loss = kl_chroma + self.lambda_hue * weighted_kl_hue
+        
         return total_loss

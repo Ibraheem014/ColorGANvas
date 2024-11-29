@@ -17,18 +17,19 @@ This file trains the model
 # Training parameters
 num_epochs = 50
 batch_size = 64
-learning_rate = 0.0008 
+learning_rate_G = 0.0008
+learning_rate_D = 0.0002   # Make discriminator learn slower
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def initialize_data_loaders():
     """Initialize the dataset and data loaders."""
     train_l_path = "preprocessed_data/training/L/"
-    train_ab_path = "preprocessed_data/training/AB/"
+    train_ch_path = "preprocessed_data/training/CH/"
     valid_l_path = "preprocessed_data/validation/L/"
-    valid_ab_path = "preprocessed_data/validation/AB/"
+    valid_ch_path = "preprocessed_data/validation/CH/"
     
-    train_dataset = LABDataset(train_l_path, train_ab_path)
-    valid_dataset = LABDataset(valid_l_path, valid_ab_path)
+    train_dataset = LABDataset(train_l_path, train_ch_path)
+    valid_dataset = LABDataset(valid_l_path, valid_ch_path)
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=7, pin_memory=True)
     valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=7, pin_memory=True)
@@ -40,7 +41,7 @@ def initialize_model():
 
     # Initialize the model and the discriminator
     generator = Unet(input_nc=1, output_nc=2, num_downs=7, ngf=64)
-    discriminator = Discriminator(input_nc=8, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d)
+    discriminator = Discriminator(input_nc=3, ndf=64) 
 
     # Transfer models to device
     generator = generator.to(device)
@@ -48,17 +49,14 @@ def initialize_model():
 
     return generator, discriminator
 
-def train_model(generator, discriminator, train_loader, valid_loader, optimizer_G, optimizer_D, num_epochs, scheduler=None):
+def train_model(generator, discriminator, train_loader, valid_loader, optimizer_G, optimizer_D, num_epochs, scheduler_D=None, scheduler_G=None):
     """Train the model with the given parameters."""
-    # Initialize GradScaler for mixed precision
     scaler = GradScaler("cuda")
 
-    # Initialize loss functions
     criterion_GAN = nn.BCEWithLogitsLoss()
     criterion_L1 = nn.L1Loss()
     chroma_hue_loss = CromaHueKLLoss(lambda_hue=5.0)
     
-    # Initialize lists to store metrics
     train_G_losses = []
     train_D_losses = []
     val_losses = []
@@ -70,100 +68,65 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         epoch_G_loss = 0
         epoch_D_loss = 0
         start_time = time.time()
-        
 
-        for L, AB in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}", position=0, leave=True):
-            L, AB = L.to(device), AB.to(device) #real AB input tensor size flow 4 
+        for L, CH in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}", position=0, leave=True):
+            L, CH = L.to(device), CH.to(device)
+            
+            # Train Discriminator
             optimizer_D.zero_grad()
-
-            # Forward pass with mixed precision
             with autocast(device_type="cuda"):
-                fake_chroma, fake_hue = generator(L)
-                fake_AB = torch.cat((fake_chroma, fake_hue), dim=1)
+                # Generate fake images
+                fake_chroma, fake_hue = generator(L)  # Each is [batch_size, 1, 256, 256]
+                fake_CH = torch.cat((fake_chroma, fake_hue), dim=1)  # [batch_size, 2, 256, 256]
 
-                L_expanded = L.expand(-1, 4, -1, -1)
-                #print("L shape:", L.shape)                   # Expected: (batch_size, 1, height, width)
-                #print("fake_chroma shape:", fake_chroma.shape)  # Expected: (batch_size, height, width)
-                #print("fake_hue shape:", fake_hue.shape)        # Expected: (batch_size, height, width)
-                #print("fake_AB shape:", fake_AB.shape)          # Expected: (batch_size, 2, height, width)
-                #print("L_expanded shape:", L_expanded.shape)    # Expected: (batch_size, 2, height, width)
-                #print("AB shape:", AB.shape) #Expected: (batch_size, 4, height, width) currently 2®
-
-                # Create real and fake input pairs for the discriminator
-                chroma = AB[:, 0:1, :, :]
-                hue = AB[:, 1:2, :, :]
-                AB_expand = torch.cat((chroma, chroma, hue, hue), dim=1)
-                real_input = torch.cat((L_expanded, AB_expand), dim=1)   # Real pair (L and real AB)
-                fake_input = torch.cat((L_expanded, fake_AB.detach()), dim=1)  # Fake pair (L and fake AB)
-
-
-
-                #print("real_input shape:", real_input.shape)    # Expected: (batch_size, 4, height, width)
-                #print("fake_input shape:", fake_input.shape)    # Expected: (batch_size, 4, height, width)
-
-
-                # Discriminator output for real images
+                # Real pairs - make sure total channels = 3
+                real_input = torch.cat((L, CH), dim=1)  # [batch_size, 3, 256, 256]
                 pred_real = discriminator(real_input)
-                # Discriminator output for fake images
+                
+                # Fake pairs - make sure total channels = 3
+                fake_input = torch.cat((L, fake_CH.detach()), dim=1)  # [batch_size, 3, 256, 256]
                 pred_fake = discriminator(fake_input)
-
-                # Labels for real and fake images
-                real_labels = torch.ones_like(pred_real)
-                fake_labels = torch.zeros_like(pred_fake)
-
-                # Compute discriminator losses
+                # Inside training loop after moving tensors to device:
+                # Discriminator losses
+                real_labels = torch.ones_like(pred_real) * 0.9
+                fake_labels = torch.zeros_like(pred_fake) + 0.1
                 loss_D_real = criterion_GAN(pred_real, real_labels)
                 loss_D_fake = criterion_GAN(pred_fake, fake_labels)
-                
                 loss_D = (loss_D_real + loss_D_fake) * 0.5
 
-            # Backpropagate discriminator loss
             scaler.scale(loss_D).backward()
             scaler.step(optimizer_D)
             scaler.update()
 
+            # Train Generator
             optimizer_G.zero_grad()
-
-            # Generate fake images again for generator update
             with autocast(device_type="cuda"):
+                # Generate fake images again
                 fake_chroma, fake_hue = generator(L)
-                fake_AB = torch.cat((fake_chroma, fake_hue), dim=1)
-                L_expanded = L.expand(-1, 4, -1, -1)
+                fake_CH = torch.cat((fake_chroma, fake_hue), dim=1)
                 
-                fake_input = torch.cat((L_expanded, fake_AB.detach()), dim=1)
+                # Generator GAN loss
+                fake_input = torch.cat((L, fake_CH), dim=1)
                 pred_fake = discriminator(fake_input)
-
-                # Generator adversarial loss (we want the discriminator to classify the fake images as real)
                 loss_G_GAN = criterion_GAN(pred_fake, real_labels)
 
-                # Generator reconstruction loss
-                ##loss_G_L1 = criterion_L1(fake_AB, AB) * 100  # Adjust the weight as needed
+                # Get ground truth Chroma and Hue
+                gt_chroma, gt_hue = CH[:, 0:1, :, :], CH[:, 1:2, :, :]
 
-                # Separate Chroma and Hue components (ensure your model outputs these separately)
-                gt_chroma, gt_hue = AB[:, 0, :, :].unsqueeze(1), AB[:, 1, :, :].unsqueeze(1)
-                #fake_chroma = fake_chroma.unsqueeze(1)
-                #fake_hue = fake_hue.unsqueeze(1)
+                # Reconstruction loss
+                loss_G_L1 = criterion_L1(fake_CH, CH) * 100
 
-                #print("gt_chroma shape:", gt_chroma.shape)
-                #print("fake_chroma shape:", fake_chroma.shape)
-                #print("gt_hue shape:", gt_hue.shape)
-                #print("fake_hue shape:", fake_hue.shape)
-
-
-                # Compute the Chroma-Hue KL loss
-                chroma_values = gt_chroma  # Chroma values for weighting
-                loss_G_KL = chroma_hue_loss(gt_chroma, fake_chroma, gt_hue, fake_hue, chroma_values)
-
+                # Chroma-Hue KL loss
+                loss_G_KL = chroma_hue_loss(gt_chroma, fake_chroma, gt_hue, fake_hue, gt_chroma)
 
                 # Total generator loss
-                loss_G = loss_G_GAN + loss_G_KL
-            
-            # Backpropagate generator loss
+                loss_G = loss_G_GAN + loss_G_KL + loss_G_L1
+
             scaler.scale(loss_G).backward()
             scaler.step(optimizer_G)
             scaler.update()
-
-            # Accumulate losses
+            #scheduler_G.step()
+            #scheduler_D.step()
             epoch_G_loss += loss_G.item()
             epoch_D_loss += loss_D.item()
 
@@ -176,31 +139,15 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         val_loss = 0
         
         with torch.no_grad():
-            for L, AB in valid_loader:
-                L, AB = L.to(device), AB.to(device)
+            for L, CH in valid_loader:
+                L, CH = L.to(device), CH.to(device)
                 fake_chroma, fake_hue = generator(L)
-                gt_chroma, gt_hue = AB[:, 0, :, :], AB[:, 1, :, :]
+                gt_chroma, gt_hue = CH[:, 0:1, :, :], CH[:, 1:2, :, :]
 
-                #output = generator(L)
-                ##loss = criterion_L1(output, AB)
-                ##val_loss += loss.item()
-                # Separate Chroma and Hue
-                # Ensure tensors have a channel dimension
-                if gt_chroma.dim() == 3:  # If shape is [batch_size, height, width]
-                    gt_chroma = gt_chroma.unsqueeze(1)  # Shape: [batch_size, 1, height, width]
-                if gt_hue.dim() == 3:
-                    gt_hue = gt_hue.unsqueeze(1)
-                if fake_chroma.dim() == 3:
-                    fake_chroma = fake_chroma.unsqueeze(1)
-                if fake_hue.dim() == 3:
-                    fake_hue = fake_hue.unsqueeze(1)
-
-                chroma_values = gt_chroma
-                val_loss += chroma_hue_loss(gt_chroma, fake_chroma, gt_hue, fake_hue, chroma_values).item()
+                val_loss += chroma_hue_loss(gt_chroma, fake_chroma, gt_hue, fake_hue, gt_chroma).item()
                 
             avg_val_loss = val_loss / len(valid_loader)
         
-        # Store metrics
         train_G_losses.append(avg_G_loss)
         train_D_losses.append(avg_D_loss)
         val_losses.append(avg_val_loss)
@@ -208,23 +155,17 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         epoch_time = time.time() - start_time
         epoch_times.append(epoch_time)
 
-        # Log the metrics
         print(f"Epoch [{epoch+1}/{num_epochs}], Time: {epoch_time:.2f}s")
         print(f"Generator Loss: {avg_G_loss:.4f}, Discriminator Loss: {avg_D_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
-        #scheduler.step()
-
-        # Save checkpoints
         if (epoch + 1) % 5 == 0:
             torch.save(generator.state_dict(), f"generator_epoch_{epoch + 1}.pth")
             torch.save(discriminator.state_dict(), f"discriminator_epoch_{epoch + 1}.pth")
             print(f"Model checkpoints saved at epoch {epoch + 1}")
 
-    # Save final models
     torch.save(generator.state_dict(), "generator_final.pth")
     torch.save(discriminator.state_dict(), "discriminator_final.pth")
 
-    # Plot training curves
     plot_training_curves(num_epochs, train_G_losses, train_D_losses, val_losses, epoch_times)
 
 def plot_training_curves(num_epochs, train_G_losses, train_D_losses, val_losses, epoch_times):
@@ -276,8 +217,9 @@ if __name__ == '__main__':
     train_loader, valid_loader = initialize_data_loaders()
     generator, discriminator = initialize_model()
     criterion = nn.MSELoss()
-    optimizer_G = optim.Adam(generator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
-    optimizer_D = optim.Adam(discriminator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
-    #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.8)
+    optimizer_G = optim.Adam(generator.parameters(), lr=learning_rate_G, betas=(0.5, 0.999))
+    optimizer_D = optim.Adam(discriminator.parameters(), lr=learning_rate_D, betas=(0.5, 0.999))
+    #scheduler_G = optim.lr_scheduler.StepLR(optimizer_G, step_size=10, gamma=0.5)
+    #scheduler_D = optim.lr_scheduler.StepLR(optimizer_D, step_size=10, gamma=0.5)
     
     train_model(generator, discriminator, train_loader, valid_loader, optimizer_G, optimizer_D, num_epochs)

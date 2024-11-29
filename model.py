@@ -66,15 +66,15 @@ class UNetBlock(nn.Module):
         upnorm = nn.BatchNorm2d(outer_nc)
 
         if outermost:
-            upconv_chroma = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
-                                               kernel_size=4, stride=2,
-                                               padding=1)
-            upconv_hue = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
-                                            kernel_size=4, stride=2,
-                                            padding=1)
+            upconv_chroma = nn.ConvTranspose2d(inner_nc * 2, 1,  # Force 1 channel output
+                                    kernel_size=4, stride=2,
+                                    padding=1)
+            upconv_hue = nn.ConvTranspose2d(inner_nc * 2, 1,  # Force 1 channel output
+                                    kernel_size=4, stride=2,
+                                    padding=1)
             down = [downconv]
-            up_chroma = [uprelu, upconv_chroma, nn.Softmax(dim=1)]  # Chroma output as probabilities
-            up_hue = [uprelu, upconv_hue, nn.Softmax(dim=1)]        # Hue output as probabilities
+            up_chroma = [uprelu, upconv_chroma, nn.Sigmoid()]  # Chroma output as probabilities
+            up_hue = [uprelu, upconv_hue, nn.Tanh()]        # Hue output as probabilities
 
             # Separate heads added to the model
             self.model_chroma = nn.Sequential(*(down + [submodule] + up_chroma))
