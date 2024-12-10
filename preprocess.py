@@ -91,12 +91,12 @@ def preprocess_and_save(data_path, l_output_path, ab_output_path):
 
 if __name__ == "__main__":
     # Your existing directory setup code here
-    train_path = "colorization/training_small/"
+    train_path = "training"
     train_l_path, train_ab_path = "preprocessed_data/training/L/", "preprocessed_data/training/AB/"
     os.makedirs(train_l_path, exist_ok=True)
     os.makedirs(train_ab_path, exist_ok=True)
 
-    valid_path = "colorization/validation_small/"
+    valid_path = "validation/"
     valid_l_path = "preprocessed_data/validation/L/"
     valid_ab_path = "preprocessed_data/validation/AB/"
     os.makedirs(valid_l_path, exist_ok=True)

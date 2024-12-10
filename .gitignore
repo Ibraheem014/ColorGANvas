@@ -7,3 +7,9 @@ __pycache__/
 *.jpg
 *.pth
 requirements.txt
+train.py
+.gitignore
+full.zip
+preprocess.py
+train.py
+.gitignore

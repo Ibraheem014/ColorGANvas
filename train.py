@@ -2,238 +2,272 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
-import time
 import matplotlib.pyplot as plt
-from model import Unet, Discriminator
+from datetime import datetime
 from ColorizationDataset import LABDataset
+from model import Unet, Discriminator
+import time
+import psutil
 
-"""
-This file trains the model
-"""
-
-# Training parameters
-num_epochs = 50
-batch_size = 64
-learning_rate = 0.0002
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-def initialize_data_loaders():
-    """Initialize the dataset and data loaders."""
-    train_l_path = "preprocessed_data/training/L/"
-    train_ab_path = "preprocessed_data/training/AB/"
-    valid_l_path = "preprocessed_data/validation/L/"
-    valid_ab_path = "preprocessed_data/validation/AB/"
+def plot_training_curves(metrics):
+    """Plot comprehensive training metrics."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    train_dataset = LABDataset(train_l_path, train_ab_path)
-    valid_dataset = LABDataset(valid_l_path, valid_ab_path)
+    # Create a figure with subplots
+    fig = plt.figure(figsize=(20, 10))
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=7, pin_memory=True)
-    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=7, pin_memory=True)
-    
-    return train_loader, valid_loader
-
-def weights_init_normal(m):
-    """Applies custom weight initialization."""
-    classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
-        nn.init.normal_(m.weight.data, 0.0, 0.02)
-    elif classname.find('BatchNorm') != -1:
-        nn.init.normal_(m.weight.data, 1.0, 0.02)
-        nn.init.constant_(m.bias.data, 0)
-
-def initialize_model():
-    """Initialize the U-Net model and transfer it to the GPU if available."""
-
-    # Initialize the model and the discriminator
-    generator = Unet(input_nc=1, output_nc=2, num_downs=7, ngf=64)
-    discriminator = Discriminator(input_nc=3, ndf=64, n_layers=3)
-
-    # Apply custom weight initialization 
-    generator.apply(weights_init_normal)
-    discriminator.apply(weights_init_normal)
-
-    # Transfer models to device
-    generator = generator.to(device)
-    discriminator = discriminator.to(device)
-
-    return generator, discriminator
-
-def train_model(generator, discriminator, train_loader, valid_loader, optimizer_G, optimizer_D, num_epochs, scheduler=None):
-    """Train the model with the given parameters."""
-    # Initialize GradScaler for mixed precision
-    scaler = GradScaler("cuda")
-
-    # Initialize loss functions
-    criterion_GAN = nn.BCEWithLogitsLoss()
-    criterion_L1 = nn.L1Loss()
-    
-    # Initialize lists to store metrics
-    train_G_losses = []
-    train_D_losses = []
-    val_losses = []
-    epoch_times = []
-
-    for epoch in range(num_epochs):
-        generator.train()
-        discriminator.train()
-        epoch_G_loss = 0
-        epoch_D_loss = 0
-        start_time = time.time()
-
-        for L, AB in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}", position=0, leave=True):
-            L, AB = L.to(device), AB.to(device)
-            optimizer_D.zero_grad()
-
-            # Forward pass with mixed precision
-            with autocast(device_type="cuda"):
-                fake_AB = generator(L)
-
-                # Create real and fake input pairs for the discriminator
-                real_input = torch.cat((L, AB), dim=1)   # Real pair (L and real AB)
-                fake_input = torch.cat((L, fake_AB.detach()), dim=1)  # Fake pair (L and fake AB)
-
-                # Discriminator output for real images
-                pred_real = discriminator(real_input)
-                # Discriminator output for fake images
-                pred_fake = discriminator(fake_input)
-
-                # Labels for real and fake images
-                real_labels = torch.ones_like(pred_real)
-                fake_labels = torch.zeros_like(pred_fake)
-
-                # Compute discriminator losses
-                loss_D_real = criterion_GAN(pred_real, real_labels)
-                loss_D_fake = criterion_GAN(pred_fake, fake_labels)
-                loss_D = (loss_D_real + loss_D_fake) * 0.5
-
-            # Backpropagate discriminator loss
-            scaler.scale(loss_D).backward()
-            scaler.step(optimizer_D)
-
-            optimizer_G.zero_grad()
-
-            # Generate fake images again for generator update
-            with autocast(device_type="cuda"):
-                fake_AB = generator(L)
-                fake_input = torch.cat((L, fake_AB), dim=1)
-                pred_fake = discriminator(fake_input)
-
-                # Generator adversarial loss (we want the discriminator to classify the fake images as real)
-                loss_G_GAN = criterion_GAN(pred_fake, real_labels)
-
-                # Generator reconstruction loss
-                loss_G_L1 = criterion_L1(fake_AB, AB) * 100  # Adjust the weight as needed
-
-                # Total generator loss
-                loss_G = loss_G_GAN + loss_G_L1
-            
-            # Backpropagate generator loss
-            scaler.scale(loss_G).backward()
-            scaler.step(optimizer_G)
-            scaler.update()
-
-            # Accumulate losses
-            epoch_G_loss += loss_G.item()
-            epoch_D_loss += loss_D.item()
-
-        # Calculate average losses
-        avg_G_loss = epoch_G_loss / len(train_loader)
-        avg_D_loss = epoch_D_loss / len(train_loader)
-        
-        # Validation loop
-        generator.eval()
-        val_loss = 0
-        
-        with torch.no_grad(), autocast(device_type="cuda"):
-            for L, AB in valid_loader:
-                L, AB = L.to(device), AB.to(device)
-                output = generator(L)
-                loss = criterion(output, AB)
-                val_loss += loss.item()
-        
-        avg_val_loss = val_loss / len(valid_loader)
-        
-        # Store metrics
-        train_G_losses.append(avg_G_loss)
-        train_D_losses.append(avg_D_loss)
-        val_losses.append(avg_val_loss)
-        
-        epoch_time = time.time() - start_time
-        epoch_times.append(epoch_time)
-
-        # Log the metrics
-        print(f"Epoch [{epoch+1}/{num_epochs}], Time: {epoch_time:.2f}s")
-        print(f"Generator Loss: {avg_G_loss:.4f}, Discriminator Loss: {avg_D_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
-
-        if scheduler:
-            scheduler.step()
-
-        # Save checkpoints
-        if (epoch + 1) % 5 == 0:
-            torch.save(generator.state_dict(), f"generator_epoch_{epoch + 1}.pth")
-            torch.save(discriminator.state_dict(), f"discriminator_epoch_{epoch + 1}.pth")
-            print(f"Model checkpoints saved at epoch {epoch + 1}")
-
-    # Save final models
-    torch.save(generator.state_dict(), "generator_final.pth")
-    torch.save(discriminator.state_dict(), "discriminator_final.pth")
-
-    # Plot training curves
-    plot_training_curves(num_epochs, train_G_losses, train_D_losses, val_losses, epoch_times)
-
-def plot_training_curves(num_epochs, train_G_losses, train_D_losses, val_losses, epoch_times):
-    """Plot training loss and epoch time curves."""
-    epochs = range(1, num_epochs + 1)
-
-    # Plot Generator and Discriminator Losses
-    plt.figure(figsize=(15, 5))
-
-    # Generator Loss
-    plt.subplot(1, 3, 1)
-    plt.plot(epochs, train_G_losses, label='Generator Loss')
-    plt.xlabel('Epoch')
+    # Plot Generator Losses
+    plt.subplot(2, 2, 1)
+    plt.plot(metrics['G_losses'], label='Total Loss', color='blue')
+    plt.plot(metrics['G_GAN_losses'], label='GAN Loss', color='green')
+    plt.plot(metrics['G_L1_losses'], label='L1 Loss', color='red')
+    plt.xlabel('Iteration')
     plt.ylabel('Loss')
-    plt.title('Generator Loss')
+    plt.title('Generator Losses')
     plt.legend()
+    plt.grid(True)
 
-    # Discriminator Loss
-    plt.subplot(1, 3, 2)
-    plt.plot(epochs, train_D_losses, label='Discriminator Loss', color='orange')
-    plt.xlabel('Epoch')
+    # Plot Discriminator Loss
+    plt.subplot(2, 2, 2)
+    plt.plot(metrics['D_losses'], label='Discriminator Loss', color='purple')
+    plt.xlabel('Iteration')
     plt.ylabel('Loss')
     plt.title('Discriminator Loss')
     plt.legend()
+    plt.grid(True)
 
-    # Validation Loss
-    plt.subplot(1, 3, 3)
-    plt.plot(epochs, val_losses, label='Validation Loss', color='green')
+    # Plot Validation Loss
+    plt.subplot(2, 2, 3)
+    plt.plot(metrics['val_losses'], label='Validation Loss', color='orange')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title('Validation Loss')
     plt.legend()
+    plt.grid(True)
 
-    plt.tight_layout()
-    plt.savefig('training_metrics.png')
-    plt.show()
-    
-    # Plot Time per Epoch
-    plt.figure()
-    plt.plot(epochs, epoch_times, label='Time per Epoch')
+    # Plot Training Time
+    plt.subplot(2, 2, 4)
+    plt.plot(metrics['epoch_times'], label='Time per Epoch', color='brown')
     plt.xlabel('Epoch')
     plt.ylabel('Time (seconds)')
-    plt.title('Epoch Time')
+    plt.title('Training Time per Epoch')
     plt.legend()
-    plt.savefig('epoch_times.png')
-    plt.show()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(f'training_metrics_{timestamp}.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+def initialize_data_loaders():
+    """Initialize data loaders optimized for H100."""
+    train_l_path = "../../preprocessed_data/training/L/"
+    train_ab_path = "../../preprocessed_data/training/AB/"
+    valid_l_path = "../../preprocessed_data/validation/L/"
+    valid_ab_path = "../../preprocessed_data/validation/AB/"
+    
+    train_dataset = LABDataset(train_l_path, train_ab_path)
+    valid_dataset = LABDataset(valid_l_path, valid_ab_path)
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=64,  
+        shuffle=True,
+        num_workers=16,
+        pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
+        drop_last=True
+    )
+    
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=64,  # Back to same as training
+        shuffle=False,
+        num_workers=32,
+        pin_memory=True,
+        persistent_workers=True,
+        drop_last=False
+    )
+    
+    return train_loader, valid_loader
+
+def initialize_model():
+    """Initialize models optimized for H100."""
+    generator = Unet(input_nc=1, output_nc=2, num_downs=7, ngf=64)
+    discriminator = Discriminator(input_nc=3, ndf=64, n_layers=3)
+    
+    # Enable CUDA optimizations for RNNs
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
+    
+    generator = generator.to(device, memory_format=torch.channels_last)
+    discriminator = discriminator.to(device, memory_format=torch.channels_last)
+    # Transfer to device with optimized memory format
+    
+    return generator, discriminator
+
+def train_model(generator, discriminator, train_loader, valid_loader, optimizer_G, optimizer_D, num_epochs, scheduler=None):
+    """Training loop optimized for H100 GPU with comprehensive metrics tracking."""
+    scaler = GradScaler()
+    criterion_GAN = nn.BCEWithLogitsLoss()
+    criterion_L1 = nn.L1Loss()
+    
+    # Initialize metrics dictionary
+    metrics = {
+        'G_losses': [],
+        'G_GAN_losses': [],
+        'G_L1_losses': [],
+        'D_losses': [],
+        'val_losses': [],
+        'epoch_times': []
+    }
+        
+
+    
+    for epoch in range(num_epochs):
+        gpu_mem = torch.cuda.memory_allocated() / 1024**2
+        ram_used = psutil.Process().memory_info().rss / 1024**2
+        print(f"GPU Memory: {gpu_mem:.0f}MB, RAM Used: {ram_used:.0f}MB")
+        epoch_start_time = time.time()
+        generator.train()
+        discriminator.train()
+        
+        epoch_G_loss = 0
+        epoch_D_loss = 0
+        epoch_G_GAN_loss = 0
+        epoch_G_L1_loss = 0
+        
+        with tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}") as pbar:
+            for i, (L, AB) in enumerate(pbar):
+                L = L.to(device, non_blocking=True, memory_format=torch.channels_last)
+                AB = AB.to(device, non_blocking=True, memory_format=torch.channels_last)
+                
+                # Train discriminator
+                optimizer_D.zero_grad(set_to_none=True)
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    fake_AB = generator(L)
+                    real_input = torch.cat((L, AB), dim=1)
+                    fake_input = torch.cat((L, fake_AB.detach()), dim=1)
+                    
+                    pred_real = discriminator(real_input)
+                    pred_fake = discriminator(fake_input)
+                    
+                    loss_D = (criterion_GAN(pred_real, torch.ones_like(pred_real)) + 
+                             criterion_GAN(pred_fake, torch.zeros_like(pred_fake))) * 0.5
+                
+                scaler.scale(loss_D).backward()
+                scaler.step(optimizer_D)
+                
+                # Train generator
+                optimizer_G.zero_grad(set_to_none=True)
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    fake_AB = generator(L)
+                    fake_input = torch.cat((L, fake_AB), dim=1)
+                    pred_fake = discriminator(fake_input)
+                    
+                    loss_G_GAN = criterion_GAN(pred_fake, torch.ones_like(pred_fake))
+                    loss_G_L1 = criterion_L1(fake_AB, AB) * 100
+                    loss_G = loss_G_GAN + loss_G_L1
+                
+                scaler.scale(loss_G).backward()
+                scaler.step(optimizer_G)
+                scaler.update()
+                
+                # Accumulate losses
+                epoch_G_loss += loss_G.item()
+                epoch_D_loss += loss_D.item()
+                epoch_G_GAN_loss += loss_G_GAN.item()
+                epoch_G_L1_loss += loss_G_L1.item()
+                
+                # Update progress bar
+                pbar.set_postfix({
+                    'G_loss': loss_G.item(),
+                    'D_loss': loss_D.item(),
+                    'L1_loss': loss_G_L1.item()
+                })
+                        
+        # Calculate average losses for the epoch
+        num_batches = len(train_loader)
+        avg_G_loss = epoch_G_loss / num_batches
+        avg_D_loss = epoch_D_loss / num_batches
+        avg_G_GAN_loss = epoch_G_GAN_loss / num_batches
+        avg_G_L1_loss = epoch_G_L1_loss / num_batches
+        
+        # Validation phase
+        generator.eval()
+        val_loss = 0
+        with torch.no_grad(), autocast(dtype=torch.float16):
+            for L, AB in valid_loader:
+                L = L.to(device, non_blocking=True, memory_format=torch.channels_last)
+                AB = AB.to(device, non_blocking=True, memory_format=torch.channels_last)
+                fake_AB = generator(L)
+                val_loss += criterion_L1(fake_AB, AB).item()
+        
+        val_loss /= len(valid_loader)
+        epoch_time = time.time() - epoch_start_time
+        
+        # Store metrics
+        metrics['G_losses'].append(avg_G_loss)
+        metrics['G_GAN_losses'].append(avg_G_GAN_loss)
+        metrics['G_L1_losses'].append(avg_G_L1_loss)
+        metrics['D_losses'].append(avg_D_loss)
+        metrics['val_losses'].append(val_loss)
+        metrics['epoch_times'].append(epoch_time)
+        
+        # Print epoch summary
+        print(f"\nEpoch [{epoch+1}/{num_epochs}] - Time: {epoch_time:.2f}s")
+        print(f"G_loss: {avg_G_loss:.4f}, D_loss: {avg_D_loss:.4f}, Val_loss: {val_loss:.4f}")
+        
+        if scheduler:
+            scheduler.step()
+        
+        # Save checkpoints with metrics
+        if (epoch + 1) % 5 == 0:
+            torch.save({
+                'epoch': epoch,
+                'generator_state_dict': generator.state_dict(),
+                'discriminator_state_dict': discriminator.state_dict(),
+                'optimizer_G_state_dict': optimizer_G.state_dict(),
+                'optimizer_D_state_dict': optimizer_D.state_dict(),
+                'metrics': metrics,
+                'val_loss': val_loss,
+                'scaler_state_dict': scaler.state_dict(),
+            }, f'checkpoint_epoch_{epoch+1}.pt')
+            
+            # Plot current metrics
+            plot_training_curves(metrics)
+
+    # Final metrics plot
+    plot_training_curves(metrics)
+    return metrics
 
 if __name__ == '__main__':
+    torch.set_float32_matmul_precision('high')
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.allow_tf32 = True
+    # Training parameters optimized for H100
+    learning_rate = 0.0001  # Slightly higher learning rate due to larger batch size
+    num_epochs = 50
+    device = torch.device("cuda")
+    
     train_loader, valid_loader = initialize_data_loaders()
     generator, discriminator = initialize_model()
-    criterion = nn.MSELoss()
-    optimizer_G = optim.Adam(generator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
-    optimizer_D = optim.Adam(discriminator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer_G, step_size=15, gamma=0.8)
     
-    train_model(generator, discriminator, train_loader, valid_loader, optimizer_G, optimizer_D, num_epochs)
+    # Use AdamW instead of Adam for better performance
+    optimizer_G = optim.AdamW(generator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
+    optimizer_D = optim.AdamW(discriminator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
+    
+    # Use OneCycleLR for faster convergence
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer_G,
+        max_lr=learning_rate,
+        epochs=num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.3
+    )
+    
+    train_model(generator, discriminator, train_loader, valid_loader, 
+                optimizer_G, optimizer_D, num_epochs, scheduler)

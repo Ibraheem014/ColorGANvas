@@ -78,7 +78,7 @@ class RnnGeneratorBlock(nn.Module):
         self.gru = nn.GRU(input_size, hidden_size, batch_first=True, bidirectional=True)  # Why is this biderctional?
         self.init_gru_weights()
     def forward(self, x):
-        x = x.view(x.size(0), -1, x.size(1))  # Reshape to (batch, length of RNN sequence, features)
+        x = x.reshape(x.size(0), -1, x.size(1)) # Reshape to (batch, length of RNN sequence, features)
         output, hidden = self.gru(x)
         return output, hidden
 
