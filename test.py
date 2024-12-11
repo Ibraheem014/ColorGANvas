@@ -9,16 +9,17 @@ import matplotlib.pyplot as plt
 This File will be used for manual inference of the model, 1 image at a time
 """
 
-model_path = "generator_epoch_40.pth"
+model_path = "checkpoint_epoch_25.pt"
 # replace with the path of the image you want to run inference on
-input_image_path = "colorization/validation_small/tobacco_shop/014.jpg"
+input_image_path = "../../validation/baseball/008.jpg"
 output_image_path = "modeltest.png"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the model
 model = Unet(input_nc=1, output_nc=2, num_downs=7, ngf=64)
-model.load_state_dict(torch.load(model_path, map_location=device))
+checkpoint = torch.load(model_path, map_location=device)
+model.load_state_dict(checkpoint['generator_state_dict'])
 model = model.to(device)
 model.eval()
 
