@@ -13,7 +13,6 @@ from ColorizationDataset import LABDataset
 This file trains the model
 """
 
-# Training parameters
 num_epochs = 50
 batch_size = 64
 learning_rate = 0.0002
@@ -50,11 +49,9 @@ def initialize_model():
     generator = Unet(input_nc=1, output_nc=2, num_downs=7, ngf=64)
     discriminator = Discriminator(input_nc=3, ndf=64, n_layers=3)
 
-    # Apply custom weight initialization 
     generator.apply(weights_init_normal)
     discriminator.apply(weights_init_normal)
 
-    # Transfer models to device
     generator = generator.to(device)
     discriminator = discriminator.to(device)
 
@@ -62,14 +59,11 @@ def initialize_model():
 
 def train_model(generator, discriminator, train_loader, valid_loader, optimizer_G, optimizer_D, num_epochs, scheduler=None):
     """Train the model with the given parameters."""
-    # Initialize GradScaler for mixed precision
     scaler = GradScaler("cuda")
 
-    # Initialize loss functions
     criterion_GAN = nn.BCEWithLogitsLoss()
     criterion_L1 = nn.L1Loss()
     
-    # Initialize lists to store metrics
     train_G_losses = []
     train_D_losses = []
     val_losses = []
@@ -120,11 +114,10 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
                 fake_input = torch.cat((L, fake_AB), dim=1)
                 pred_fake = discriminator(fake_input)
 
-                # Generator adversarial loss (we want the discriminator to classify the fake images as real)
                 loss_G_GAN = criterion_GAN(pred_fake, real_labels)
 
                 # Generator reconstruction loss
-                loss_G_L1 = criterion_L1(fake_AB, AB) * 100  # Adjust the weight as needed
+                loss_G_L1 = criterion_L1(fake_AB, AB) * 100 
 
                 # Total generator loss
                 loss_G = loss_G_GAN + loss_G_L1
@@ -134,15 +127,12 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
             scaler.step(optimizer_G)
             scaler.update()
 
-            # Accumulate losses
             epoch_G_loss += loss_G.item()
             epoch_D_loss += loss_D.item()
 
-        # Calculate average losses
         avg_G_loss = epoch_G_loss / len(train_loader)
         avg_D_loss = epoch_D_loss / len(train_loader)
         
-        # Validation loop
         generator.eval()
         val_loss = 0
         
@@ -155,7 +145,6 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         
         avg_val_loss = val_loss / len(valid_loader)
         
-        # Store metrics
         train_G_losses.append(avg_G_loss)
         train_D_losses.append(avg_D_loss)
         val_losses.append(avg_val_loss)
@@ -163,7 +152,6 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
         epoch_time = time.time() - start_time
         epoch_times.append(epoch_time)
 
-        # Log the metrics
         print(f"Epoch [{epoch+1}/{num_epochs}], Time: {epoch_time:.2f}s")
         print(f"Generator Loss: {avg_G_loss:.4f}, Discriminator Loss: {avg_D_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
@@ -180,14 +168,12 @@ def train_model(generator, discriminator, train_loader, valid_loader, optimizer_
     torch.save(generator.state_dict(), "generator_final.pth")
     torch.save(discriminator.state_dict(), "discriminator_final.pth")
 
-    # Plot training curves
     plot_training_curves(num_epochs, train_G_losses, train_D_losses, val_losses, epoch_times)
 
 def plot_training_curves(num_epochs, train_G_losses, train_D_losses, val_losses, epoch_times):
     """Plot training loss and epoch time curves."""
     epochs = range(1, num_epochs + 1)
 
-    # Plot Generator and Discriminator Losses
     plt.figure(figsize=(15, 5))
 
     # Generator Loss

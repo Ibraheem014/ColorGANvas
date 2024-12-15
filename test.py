@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 This File will be used for manual inference of the model, 1 image at a time
 """
 
-model_path = "generator_epoch_40.pth"
+model_path = "generator_final.pth"
 # replace with the path of the image you want to run inference on
-input_image_path = "colorization/validation_small/tobacco_shop/014.jpg"
+input_image_path = "colorization/training_small/groom/189.jpg"
 output_image_path = "modeltest.png"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,13 +67,10 @@ with torch.no_grad():
     # Forward pass through the model
     AB_tensor = model(L_tensor)
     
-    # Postprocess output to get colorized image
     colorized_image = postprocess_output(original_L, AB_tensor[0])
     
-    # Create grayscale visualization from original L channel
     grayscale_image = cv2.cvtColor(original_L[..., np.newaxis], cv2.COLOR_GRAY2RGB)
     
-    # Combine original and colorized output side by side
     side_by_side_image = np.hstack((grayscale_image, colorized_image))
     
     # Save the side-by-side image
